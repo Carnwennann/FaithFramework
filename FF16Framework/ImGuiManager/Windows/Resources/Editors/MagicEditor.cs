@@ -5,7 +5,9 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 
+using FF16Framework.Interfaces.Magic;
 using FF16Framework.Services.ResourceManager;
 using FF16Framework.Utils;
 
@@ -37,10 +39,18 @@ public class MagicEditor
     private IOperation? _addedOperation;
     private int _inputGroup;
 
-    public MagicEditor(ResourceHandle resource, MagicFile magicFile)
+    // Toast notification state
+    private string? _toastMessage;
+    private DateTime _toastExpireTime;
+    
+    // Magic service for casting (optional - may be null)
+    private IMagicService? _magicService;
+
+    public MagicEditor(ResourceHandle resource, MagicFile magicFile, IMagicService? magicService = null)
     {
         Resource = resource;
         MagicFile = magicFile;
+        _magicService = magicService;
     }
 
     public unsafe void Render(IImGuiShell shell, IImGui imgui)
@@ -136,6 +146,69 @@ public class MagicEditor
                     shell.LogWriteLine(nameof(MagicEditor), $"SFailed to load mappings: {ex.Message}", Color.Red);
                 }
             }
+
+            // New row for casting and export buttons
+            if (_magicService != null && _currentEntry != null)
+            {
+                imgui.PushStyleColor(ImGuiCol.ImGuiCol_Button, ColorUtils.RGBA(66, 135, 245, 255));
+                imgui.PushStyleColor(ImGuiCol.ImGuiCol_ButtonHovered, ColorUtils.RGBA(99, 155, 245, 255));
+                if (imgui.Button("Cast (No Target)"u8))
+                {
+                    // Apply current changes first
+                    using (var memStream = new MemoryStream())
+                    {
+                        MagicFile.Write(memStream);
+                        Resource.ReplaceBuffer(memStream.ToArray());
+                    }
+                    
+                    // Cast without target
+                    if (_magicService.Cast((int)_currentEntry.Id, null, nint.Zero))
+                        ShowToast("Spell cast!");
+                    else
+                        ShowToast("Cast failed - no magic context");
+                }
+                imgui.PopStyleColorEx(2);
+                
+                imgui.SameLine();
+                imgui.PushStyleColor(ImGuiCol.ImGuiCol_Button, ColorUtils.RGBA(245, 166, 66, 255));
+                imgui.PushStyleColor(ImGuiCol.ImGuiCol_ButtonHovered, ColorUtils.RGBA(245, 185, 99, 255));
+                if (imgui.Button("Cast (Locked Target)"u8))
+                {
+                    // Apply current changes first
+                    using (var memStream = new MemoryStream())
+                    {
+                        MagicFile.Write(memStream);
+                        Resource.ReplaceBuffer(memStream.ToArray());
+                    }
+                    
+                    // Cast with game target
+                    if (_magicService.CastWithGameTarget((int)_currentEntry.Id, null))
+                        ShowToast("Spell cast at target!");
+                    else
+                        ShowToast("Cast failed - no target locked");
+                }
+                imgui.PopStyleColorEx(2);
+                
+                imgui.SameLine();
+                if (imgui.Button("Export JSON"u8))
+                {
+                    try
+                    {
+                        var json = ExportCurrentAsJson();
+                        imgui.SetClipboardText(json);
+                        ShowToast("Copied to clipboard!");
+                    }
+                    catch (Exception ex)
+                    {
+                        ShowToast($"Export failed: {ex.Message}");
+                    }
+                }
+                if (imgui.IsItemHovered(ImGuiHoveredFlags.ImGuiHoveredFlags_None))
+                    imgui.SetTooltip("Copy current magic structure as JSON to clipboard"u8);
+            }
+            
+            // Render toast notification
+            RenderToast(imgui);
 
             if (imgui.BeginCombo("Magics"u8, "Select magic..."u8, ImGuiComboFlags.ImGuiComboFlags_HeightLarge))
             {
@@ -506,5 +579,119 @@ public class MagicEditor
         {
             imgui.Text($"Bytes: {string.Join(" ", property.Data.Select(e => e.ToString("X2")))}");
         }
+    }
+    
+    // ========================================
+    // TOAST NOTIFICATIONS
+    // ========================================
+    
+    private void ShowToast(string message, float durationSeconds = 2.0f)
+    {
+        _toastMessage = message;
+        _toastExpireTime = DateTime.Now.AddSeconds(durationSeconds);
+    }
+    
+    private void RenderToast(IImGui imgui)
+    {
+        if (_toastMessage == null || DateTime.Now >= _toastExpireTime)
+        {
+            _toastMessage = null;
+            return;
+        }
+        
+        // Calculate alpha based on remaining time
+        var remaining = (_toastExpireTime - DateTime.Now).TotalSeconds;
+        float alpha = remaining > 0.5f ? 1.0f : (float)(remaining / 0.5f);
+        
+        // Position toast at the top center
+        var viewport = imgui.GetMainViewport();
+        var windowPos = new Vector2(viewport.WorkPos.X + viewport.WorkSize.X * 0.5f, viewport.WorkPos.Y + 50);
+        
+        imgui.SetNextWindowPosEx(windowPos, ImGuiCond.ImGuiCond_Always, new Vector2(0.5f, 0.0f));
+        imgui.SetNextWindowBgAlpha(alpha * 0.9f);
+        
+        var flags = ImGuiWindowFlags.ImGuiWindowFlags_NoDecoration | 
+                    ImGuiWindowFlags.ImGuiWindowFlags_NoInputs | 
+                    ImGuiWindowFlags.ImGuiWindowFlags_NoNav |
+                    ImGuiWindowFlags.ImGuiWindowFlags_AlwaysAutoResize;
+        
+        imgui.PushStyleVar(ImGuiStyleVar.ImGuiStyleVar_WindowRounding, 8.0f);
+        imgui.PushStyleColor(ImGuiCol.ImGuiCol_WindowBg, ColorUtils.RGBA(40, 40, 40, (byte)(255 * alpha)));
+        
+        bool open = true;
+        if (imgui.Begin("##Toast", ref open, flags))
+        {
+            imgui.PushStyleColor(ImGuiCol.ImGuiCol_Text, ColorUtils.RGBA(255, 255, 255, (byte)(255 * alpha)));
+            imgui.TextUnformatted($"  {_toastMessage}  ");
+            imgui.PopStyleColor();
+        }
+        imgui.End();
+        
+        imgui.PopStyleColor();
+        imgui.PopStyleVar();
+    }
+    
+    // ========================================
+    // JSON EXPORT
+    // ========================================
+    
+    private string ExportCurrentAsJson()
+    {
+        if (_currentEntry == null)
+            return "{}";
+        
+        var json = new MagicModificationJson
+        {
+            MagicId = (int)_currentEntry.Id,
+            Modifications = new List<MagicModificationJson.ModificationEntry>()
+        };
+        
+        // Export all current properties as SetProperty modifications
+        var operationGroups = _currentEntry.OperationGroupList?.OperationGroups;
+        if (operationGroups == null)
+            return "{}";
+            
+        foreach (var group in operationGroups)
+        {
+            var operations = group.OperationList?.Operations;
+            if (operations == null) continue;
+            
+            foreach (var op in operations)
+            {
+                foreach (var prop in op.Properties)
+                {
+                    var entry = new MagicModificationJson.ModificationEntry
+                    {
+                        Type = "SetProperty",
+                        GroupId = (int)group.Id,
+                        OpId = (int)op.Type,
+                        PropId = (int)prop.Type,
+                        Value = GetPropertyValue(prop)
+                    };
+                    json.Modifications.Add(entry);
+                }
+            }
+        }
+        
+        return JsonSerializer.Serialize(json, new JsonSerializerOptions 
+        { 
+            WriteIndented = true
+        });
+    }
+    
+    private static object? GetPropertyValue(MagicOperationProperty property)
+    {
+        if (property.Value == null) return null;
+        
+        return property.Value switch
+        {
+            MagicPropertyIdValue idValue => idValue.Id,
+            MagicPropertyFloatValue floatValue => floatValue.Value,
+            MagicPropertyIntValue intValue => intValue.Value,
+            MagicPropertyBoolValue boolValue => boolValue.Value ? 1 : 0,
+            MagicPropertyByteValue byteValue => (int)byteValue.Value,
+            MagicPropertyVec3Value vec3Value => new { x = vec3Value.Value.X, y = vec3Value.Value.Y, z = vec3Value.Value.Z },
+            _ => null
+        };
     }
 }
