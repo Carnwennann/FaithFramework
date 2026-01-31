@@ -29,6 +29,16 @@ public unsafe class MagicHooks : HookGroupBase
 
     public delegate nint BattleMagicExecutor_InsertMagic(nint @this, BattleMagic* magic);
     public IHook<BattleMagicExecutor_InsertMagic> BattleMagicExecutor_InsertMagicHook { get; private set; }
+    
+    /// <summary>
+    /// Wrapper function to call InsertMagic directly.
+    /// </summary>
+    public BattleMagicExecutor_InsertMagic? InsertMagicWrapper { get; private set; }
+    
+    /// <summary>
+    /// Cached ExecutorClient from the last InsertMagic call.
+    /// </summary>
+    public nint CachedExecutorClient { get; private set; }
 
     public MagicHooks(Config config, IModConfig modConfig, ILogger logger, 
         FrameworkConfig frameworkConfig, IImGuiShell imGuiShell, EntityManagerHooks entityManager)
@@ -41,13 +51,18 @@ public unsafe class MagicHooks : HookGroupBase
 
     public override void SetupHooks()
     {
-        Project.Scans.AddScanHook(nameof(BattleMagicExecutor_InsertMagic), (result, hooks)
-            => BattleMagicExecutor_InsertMagicHook = hooks.CreateHook<BattleMagicExecutor_InsertMagic>(BattleMagicExecutor_InsertMagicImpl, result).Activate());
-
+        Project.Scans.AddScanHook(nameof(BattleMagicExecutor_InsertMagic), (result, hooks) =>
+        {
+            BattleMagicExecutor_InsertMagicHook = hooks.CreateHook<BattleMagicExecutor_InsertMagic>(BattleMagicExecutor_InsertMagicImpl, result).Activate();
+            InsertMagicWrapper = hooks.CreateWrapper<BattleMagicExecutor_InsertMagic>(result, out _);
+        });
     }
 
     private nint BattleMagicExecutor_InsertMagicImpl(nint @this, BattleMagic* magic)
     {
+        // Cache the executor client for later use
+        CachedExecutorClient = @this;
+        
         var res = BattleMagicExecutor_InsertMagicHook.OriginalFunction(@this, magic);
         if (_frameworkConfig.MagicSystem.PrintMagicCasts)
         {

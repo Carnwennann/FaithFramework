@@ -12,6 +12,7 @@ using System.Collections.Frozen;
 using System.Diagnostics;
 
 using FF16Framework.Faith.Hooks;
+using FF16Framework.Interfaces.Magic;
 using FF16Framework.Services.ResourceManager;
 using FF16Framework.ImGuiManager.Windows.Resources.Editors;
 
@@ -32,6 +33,7 @@ public class ResourceManagerWindow : IImGuiComponent
     private readonly IModConfig _modConfig;
     private readonly IModLoader _modLoader;
     private readonly ResourceManagerService _resourceManagerService;
+    private readonly IMagicService? _magicService;
 
     public bool IsOverlay => false;
     public bool IsOpen = false;
@@ -86,12 +88,13 @@ public class ResourceManagerWindow : IImGuiComponent
 
     private bool? _010EditorInstalled;
 
-    public ResourceManagerWindow(IImGui imgui, IModConfig modConfig, IModLoader modLoader, ResourceManagerService resourceManagerService)
+    public ResourceManagerWindow(IImGui imgui, IModConfig modConfig, IModLoader modLoader, ResourceManagerService resourceManagerService, IMagicService? magicService = null)
     {
         _imGui = imgui;
         _modConfig = modConfig;
         _modLoader = modLoader;
         _resourceManagerService = resourceManagerService;
+        _magicService = magicService;
     }
 
     public void RenderMenu(IImGuiShell imGuiShell)
@@ -188,7 +191,7 @@ public class ResourceManagerWindow : IImGuiComponent
                                         try
                                         {
                                             var magic = MagicFile.Open(resource.BufferAddress, resource.FileSize);
-                                            _magicEditors.TryAdd(resource.HandleAddress, new MagicEditor(resource, magic));
+                                            _magicEditors.TryAdd(resource.HandleAddress, new MagicEditor(resource, magic, _magicService));
                                         }
                                         catch (Exception ex)
                                         {
